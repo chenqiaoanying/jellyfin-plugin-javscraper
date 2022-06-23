@@ -7,41 +7,61 @@ on:
   workflow_dispatch:
 
 jobs:
-  call:
-    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/publish.yaml@master
-    with:
-      version: ${{ github.event.release.tag_name }}
-      is-unstable: ${{ github.event.release.prerelease }}
-    secrets:
-      deploy-host: ${{ secrets.DEPLOY_HOST }}
-      deploy-user: ${{ secrets.DEPLOY_USER }}
-      deploy-key: ${{ secrets.DEPLOY_KEY }}
-  publishOnRelease:
-    needs:
-      - call
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Download Artifact
-        uses: actions/download-artifact@fb598a63ae348fa914e94cd0ff38f362e927b741
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v2
         with:
-          name: build-artifact
-      - name: Setup JRPM Deps
-        shell: bash
-        run: |-
-          pip install jprm
-          echo "::endgroup::"
+          dotnet-version: "6.0.x"
+
+      - name: Build Jellyfin Plugin
+        uses: oddstr13/jellyfin-plugin-repository-manager@v0.4.2
+        with:
+          dotnet-target: "net6.0"
+          output: ./artifacts
+          version: ${{ github.event.release.tag_name }}
+
       - name: Create Plugin Manifest
         shell: bash
         run: |
-          env
-          ls
-          jprm --verbosity=debug repo init .
-          jprm --verbosity=debug repo add --url=xyz . ./*.zip
+          jprm --verbosity=debug repo init ./artifacts
+          jprm --verbosity=debug repo add --url=xyz ./artifacts ./artifacts/*.zip
           URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/release/download/${{ github.event.release.tag_name }}/"
-          URL=$(echo $url|sed -r 's/([\$\.\*\/\[\\^])/\\\1/g'| sed 's/[]]/\[]]/g')
-          sed -i "s/\"sourceUrl\".*\//\"sourceUrl\": \"$URL/" manifest.json
+          URL=$(echo URL|sed -r 's/([\$\.\*\/\[\\^])/\\\1/g'| sed 's/[]]/\[]]/g')
+          sed -i "s/\"sourceUrl\".*\//\"sourceUrl\": \"$URL/" ./artifacts/manifest.json
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifact
+          retention-days: 30
+          if-no-files-found: error
+          path: ./artifacts
+
+  upload:
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v3.0.0
+        with:
+          name: build-artifact
+
+      - name: Prepare GH Release Assets
+        run: |-
+          for file in ./*.zip; do
+            md5sum ${file#./} >> ${file%.*}.md5
+            sha256sum ${file#./} >> ${file%.*}.sha256
+          done
+          ls -l
+
       - name: Upload GH Release Assets
-        uses: shogo82148/actions-upload-release-asset@8dbaa4469aa7256e70624d72f2567fac8f5341b3
+        uses: shogo82148/actions-upload-release-asset@1.6.2
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./manifest.json
+          asset_path: ./*
