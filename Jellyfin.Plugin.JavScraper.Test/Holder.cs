@@ -9,10 +9,10 @@ namespace Jellyfin.Plugin.JavScraper.Test
     internal class Holder
     {
         private static readonly object _locker = new();
+        private static volatile ApplicationDatabase? _applicationDatabase;
         private static ILoggerFactory? _loggerFactory;
         private static HttpClient? _httpClient;
         private static IHttpClientManager? _httpClientFactory;
-        private static ApplicationDatabase? _applicationDatabase;
         private static DMMService? _dmmService;
 
 

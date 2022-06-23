@@ -5,7 +5,7 @@ imageUrl: "https://raw.githubusercontent.com/chenqiaoanying/jellyfin-plugin-javs
 version: "2.0.0.0"
 targetAbi: "10.8.0.0"
 framework: "net6.0"
-owner: "jellyfin"
+owner: "chenqiaoanying"
 overview: "Jellyfin 的一个日本电影刮削器插件，可以从某些网站抓取影片信息。"
 description: >
   Jellyfin 的一个日本电影刮削器插件，可以从某些网站抓取影片信息。
