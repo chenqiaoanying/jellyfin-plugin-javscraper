@@ -21,10 +21,13 @@ namespace Jellyfin.Plugin.JavScraper.Test.Scrapers
         [DataRow(typeof(R18Scraper), "ssis-335")]
         public void TestScraper(Type type, string id)
         {
+
             Assert.IsNotNull(type.FullName);
-            var args = new object[]
+            var args = new[]
             {
-                Holder.GetLoggerFactory().CreateLogger(type), Holder.GetHttpClientManager(), Holder.GetDmmService()
+                typeof(LoggerFactoryExtensions).GetMethod("CreateLogger", new[]{typeof(ILoggerFactory)})!.MakeGenericMethod(type).Invoke(null, new object?[] { Holder.GetLoggerFactory() })!,
+                Holder.GetHttpClientManager(),
+                Holder.GetDmmService()
             };
             var createdObject = type.Assembly.CreateInstance(type.FullName, false, System.Reflection.BindingFlags.CreateInstance, null, args, null, null);
             if (createdObject is not IScraper scraper)

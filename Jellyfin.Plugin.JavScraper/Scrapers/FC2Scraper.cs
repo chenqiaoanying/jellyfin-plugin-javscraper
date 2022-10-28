@@ -33,15 +33,15 @@ namespace Jellyfin.Plugin.JavScraper.Scrapers
 
         protected override async Task<IReadOnlyCollection<JavVideoIndex>> DoSearch(string key)
         {
-            var vedio = await GetById(key).ConfigureAwait(false);
-            if (vedio == null)
+            var video = await GetById(key).ConfigureAwait(false);
+            if (video == null)
             {
                 return Array.Empty<JavVideoIndex>();
             }
 
             return new List<JavVideoIndex>
             {
-                vedio
+                video
             };
         }
 
@@ -71,7 +71,7 @@ namespace Jellyfin.Plugin.JavScraper.Scrapers
                 Provider = Name,
                 Url = url.ToString(),
                 Num = $"FC2-{id}",
-                Title = doc.DocumentNode.SelectSingleNode("//meta[@name='twitter:title']").GetAttributeValue("content", null)?.Trim() ?? string.Empty,
+                Title = doc.DocumentNode.SelectSingleNode("//meta[@name='twitter:title']")?.GetAttributeValue("content", null)?.Trim() ?? string.Empty,
                 Cover = doc.DocumentNode.SelectSingleNode("//meta[@property='og:image']")?.GetAttributeValue("content", null).Trim() ?? string.Empty,
                 Date = doc.DocumentNode.SelectSingleNode("//div[@class='items_article_Releasedate']")?.InnerText.TryMatch(_dateRegex, out match) == true ? match.Groups["date"].Value.Replace('/', '-') : string.Empty,
                 Maker = doc.DocumentNode.SelectSingleNode("//section[@class='items_comment_sellerBox']//h4")?.InnerText?.Trim() ?? string.Empty,
