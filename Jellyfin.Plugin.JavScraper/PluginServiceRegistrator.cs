@@ -13,7 +13,6 @@ namespace Jellyfin.Plugin.JavScraper
         public void RegisterServices(IServiceCollection serviceCollection)
         {
             serviceCollection
-                .AddSingleton<BodyAnalysisService>()
                 .AddSingleton<GfriendsAvatarService>()
                 .AddSingleton<DMMService>()
                 .AddSingleton<PersonSearchService>()

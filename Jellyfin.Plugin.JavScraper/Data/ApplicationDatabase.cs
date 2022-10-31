@@ -19,7 +19,6 @@ namespace Jellyfin.Plugin.JavScraper.Data
             Overview = GetCollection<Overview>("Overview");
             Metadata = GetCollection<Metadata>("Metadata");
             Translations = GetCollection<Translation>("Translations");
-            ImageFaceCenterPoints = GetCollection<ImageFaceCenterPoint>("ImageFaceCenterPoints");
 
             Overview.EnsureIndex(o => o.Num);
             Overview.EnsureIndex(o => o.Provider);
@@ -46,11 +45,6 @@ namespace Jellyfin.Plugin.JavScraper.Data
         /// 翻译
         /// </summary>
         public ILiteCollection<Translation> Translations { get; }
-
-        /// <summary>
-        /// 图片人脸中心点位置
-        /// </summary>
-        public ILiteCollection<ImageFaceCenterPoint> ImageFaceCenterPoints { get; }
 
         /// <summary>
         /// 保存视频元数据

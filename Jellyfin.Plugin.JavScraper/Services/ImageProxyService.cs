@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -6,7 +7,8 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
-using Jellyfin.Plugin.JavScraper.Data;
+using Emgu.CV;
+using Emgu.CV.CvEnum;
 using Jellyfin.Plugin.JavScraper.Extensions;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
@@ -20,31 +22,26 @@ namespace Jellyfin.Plugin.JavScraper.Services
     /// <summary>
     /// 图片代理服务
     /// </summary>
-    public sealed class ImageProxyService
+    public sealed class ImageProxyService : IDisposable
     {
         private readonly IServerApplicationHost _serverApplicationHost;
         private readonly ILogger _logger;
         private readonly IFileSystem _fileSystem;
         private readonly IApplicationPaths _appPaths;
         private readonly IHttpClientFactory _clientFactory;
-        private readonly ApplicationDatabase _applicationDatabase;
-        private readonly BodyAnalysisService _bodyAnalysisService;
+        private readonly CascadeClassifier _cascadeClassifier = new("haarcascade_frontalface_default.xml");
 
         public ImageProxyService(
             IServerApplicationHost serverApplicationHost,
             ILoggerFactory loggerFactory,
             IFileSystem fileSystem,
             IApplicationPaths appPaths,
-            ApplicationDatabase applicationDatabase,
-            BodyAnalysisService bodyAnalysisService,
             IHttpClientFactory clientFactory)
         {
             _serverApplicationHost = serverApplicationHost;
             _logger = loggerFactory.CreateLogger<ImageProxyService>();
             _fileSystem = fileSystem;
-            _applicationDatabase = applicationDatabase;
             _appPaths = appPaths;
-            _bodyAnalysisService = bodyAnalysisService;
             _clientFactory = clientFactory;
         }
 
@@ -89,14 +86,14 @@ namespace Jellyfin.Plugin.JavScraper.Services
             if (uriString.Contains("Plugins/JavScraper/Image", StringComparison.OrdinalIgnoreCase)) // 本地的链接
             {
                 var uri = new Uri(uriString);
-                var query = HttpUtility.ParseQueryString(uri.Query);
-                var urlString = query["url"] ?? string.Empty;
-                if (urlString.IsWebUrl())
+                var queryParameters = HttpUtility.ParseQueryString(uri.Query);
+                var urlFromQuery = queryParameters["url"];
+                if (urlFromQuery.IsWebUrl())
                 {
-                    uriString = urlString;
-                    if (Enum.TryParse<ImageType>(query.Get("type")?.Trim(), out var t2))
+                    uriString = urlFromQuery;
+                    if (Enum.TryParse<ImageType>(queryParameters["type"]?.Trim(), out var typeFromQuery))
                     {
-                        type = t2;
+                        type = typeFromQuery;
                     }
                 }
             }
@@ -110,6 +107,7 @@ namespace Jellyfin.Plugin.JavScraper.Services
             var cacheFilePath = Path.Combine(cacheDirectory, key);
 
             // 尝试从缓存中读取
+            byte[] imageByteArray;
             try
             {
                 if (cacheFilePath.Contains("../", StringComparison.Ordinal) || cacheFilePath.Length > 256)
@@ -122,204 +120,103 @@ namespace Jellyfin.Plugin.JavScraper.Services
                 // 图片文件存在，且是24小时之内的
                 if (cacheFile.Exists && cacheFile.LastWriteTimeUtc > DateTime.Now.AddDays(-1).ToUniversalTime())
                 {
-                    var bytes = await File.ReadAllBytesAsync(cacheFilePath, CancellationToken.None).ConfigureAwait(false);
                     _logger.LogInformation("Hit image cache {Uri} {File}", $"{nameof(uriString)}={uriString}", $"{nameof(cacheFilePath)}={cacheFilePath}");
-                    if (type == ImageType.Primary)
-                    {
-                        var ci = await CutImage(bytes, uriString).ConfigureAwait(false);
-                        if (ci != null)
-                        {
-                            return ci;
-                        }
-                    }
-
-                    if (FileExtensionContentTypeProvider.TryGetContentType(uriString, out var contentType))
-                    {
-                        return CreateHttpResponseInfo(bytes, contentType);
-                    }
-                    else
-                    {
-                        return CreateHttpResponseInfo(bytes);
-                    }
+                    imageByteArray = await File.ReadAllBytesAsync(cacheFilePath, CancellationToken.None).ConfigureAwait(false);
+                    return CreateHttpResponseInfo(ProcessImage(imageByteArray, type));
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Read image cache error. {Uri} {File}", $"{nameof(uriString)}={uriString}", $"{nameof(cacheFilePath)}={cacheFilePath}");
+                _logger.LogError(ex, "Fail to read image from cache. {Uri} {File}", $"{nameof(uriString)}={uriString}", $"{nameof(cacheFilePath)}={cacheFilePath}");
+            }
+
+            using var client = _clientFactory.CreateClient();
+            var rawResponse = await client.GetAsync(uriString, cancellationToken).ConfigureAwait(false);
+            if (!rawResponse.IsSuccessStatusCode)
+            {
+                return rawResponse;
             }
 
             try
             {
-                var resp = await _clientFactory.CreateClient().GetAsync(uriString, cancellationToken).ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode)
-                {
-                    return resp;
-                }
-
-                var bytes = await resp.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-                await File.WriteAllBytesAsync(cacheFilePath, bytes, cancellationToken).ConfigureAwait(false);
+                imageByteArray = await rawResponse.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
                 _logger.LogInformation("Save image cache uriString={Uri} cacheFilePath={File}", uriString, cacheFilePath);
-
-                if (type == ImageType.Primary)
-                {
-                    var ci = await CutImage(bytes, uriString).ConfigureAwait(false);
-                    if (ci != null)
-                    {
-                        return ci;
-                    }
-                }
-
-                return resp;
+                await File.WriteAllBytesAsync(cacheFilePath, imageByteArray, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Save image cache error. uriString={Uri} cacheFilePath={File}", uriString, cacheFilePath);
+                return rawResponse;
             }
 
-            return new HttpResponseMessage();
+            return CreateHttpResponseInfo(ProcessImage(imageByteArray, type));
         }
 
         /// <summary>
         /// 剪裁图片
         /// </summary>
-        /// <param name="bytes">图片内容</param>
-        /// <returns>为空：剪裁失败或者不需要剪裁。</returns>
-        /// <param name="url">图片地址</param>
-        private async Task<HttpResponseMessage?> CutImage(byte[] bytes, string url)
+        /// <param name="input">图片内容</param>
+        private byte[] ProcessImage(byte[] input, ImageType imageType)
         {
-            _logger.LogInformation($"{nameof(CutImage)}: staring...");
-            try
+            _logger.LogInformation($"{nameof(ProcessImage)}: staring...");
+            using var memoryStream = new MemoryStream(input);
+            memoryStream.Position = 0;
+            using var inputStream = new SKManagedStream(memoryStream);
+            using var bitmap = SKBitmap.Decode(inputStream);
+            var image = SKImage.FromBitmap(bitmap);
+
+            var coverHeight = bitmap.Height;
+            var coverWidth = coverHeight * 2 / 3; // 封面宽度
+            if (imageType == ImageType.Primary && bitmap.Width > coverWidth) // 需要剪裁
             {
-                using var ms = new MemoryStream(bytes);
-                ms.Position = 0;
-                using var inputStream = new SKManagedStream(ms);
-                using var bitmap = SKBitmap.Decode(inputStream);
-                var h = bitmap.Height;
-                var w = bitmap.Width;
-                var w2 = h * 2 / 3; // 封面宽度
+                var face = RecognizeFace(input);
+                var x = bitmap.Width - coverWidth; // 默认右边
 
-                if (w2 < w) // 需要剪裁
+                if (!face.IsEmpty)
                 {
-                    var x = await GetBaiduBodyAnalysisResult(bytes, url).ConfigureAwait(false);
-                    var start_w = w - w2; // 默认右边
-
-                    if (x > 0) // 百度人体识别，中心点位置
+                    if (face.Right >= bitmap.Width / 2) // 右边
                     {
-                        if (x + (w2 / 2.0) > w) // 右边
-                        {
-                            start_w = w - w2;
-                        }
-                        else if (x - (w2 / 2.0) < 0)// 左边
-                        {
-                            start_w = 0;
-                        }
-                        else // 居中
-                        {
-                            start_w = (int)x - (w2 / 2);
-                        }
+                        x = bitmap.Width - coverWidth;
                     }
-
-                    var image = SKImage.FromBitmap(bitmap);
-
-                    var subset = image.Subset(SKRectI.Create(start_w, 0, w2, h));
-                    var encodedData = subset.Encode(SKEncodedImageFormat.Jpeg, 90);
-                    _logger.LogInformation("{Method}: Already cut {Width}*{Height} --> start_w: {Start}", nameof(CutImage), w, h, start_w);
-                    return CreateHttpResponseInfo(encodedData.ToArray());
+                    else if (face.Left <= bitmap.Width / 2) // 左边
+                    {
+                        x = 0;
+                    }
+                    else // 居中
+                    {
+                        x = ((face.Right + face.Left) / 2) - (coverWidth / 2);
+                    }
                 }
 
-                _logger.LogInformation("{Method}: not need to cut. {Width}*{Height}", nameof(CutImage), w, h);
-                return null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "{Method}: cut image failed.", nameof(CutImage));
+                _logger.LogInformation("{Method}: cut {Width}*{Height} --> x: {Start}", nameof(ProcessImage), bitmap.Width, bitmap.Height, x);
+                image = image.Subset(SKRectI.Create(x, 0, coverWidth, coverHeight));
             }
 
-            _logger.LogWarning($"{nameof(CutImage)}: cut image failed.");
-            return null;
+            _logger.LogInformation("{Method}: not need to cut {Width}*{Height}", nameof(ProcessImage), bitmap.Width, coverHeight);
+            using var encodedData = image.Encode(SKEncodedImageFormat.Jpeg, 90);
+            return encodedData.ToArray();
         }
 
         /// <summary>
-        /// 获取人脸的中间位置，
+        /// 获取人脸的位置，
         /// </summary>
         /// <param name="bytes">图片数据</param>
-        /// <param name="url">图片地址</param>
         /// <returns></returns>
-        private async Task<double> GetBaiduBodyAnalysisResult(byte[] bytes, string url)
+        private Rectangle RecognizeFace(byte[] bytes)
         {
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                var p = _applicationDatabase.ImageFaceCenterPoints.FindById(url)?.Point;
-                if (p != null)
-                {
-                    return p.Value;
-                }
-            }
-
             try
             {
-                var result = await _bodyAnalysisService.BodyAnalysis(bytes).ConfigureAwait(false);
-                var personInfos = result?.PersonInfos;
-                if (personInfos == null)
-                {
-                    return 0;
-                }
+                using var image = new Mat();
+                CvInvoke.Imdecode(bytes, ImreadModes.AnyDepth | ImreadModes.AnyColor, image);
+                var rectangles = _cascadeClassifier.DetectMultiScale(image);
 
-                // 取面积最大的人
-                var personInfo = personInfos.Where(o => o.Location.Score >= 0.1).OrderByDescending(o => o.Location.Width * o.Location.Height).FirstOrDefault()
-                    ?? personInfos.FirstOrDefault();
-
-                if (personInfo == null)
-                {
-                    return 0;
-                }
-
-                // 人数大于15个，且有15个小于最大人脸，则直接用最右边的做封面。其实也可以考虑识别左边的条码，有条码直接取右边，但Jellyfin中实现困难
-                if (personInfos.Count(o => o.Location.Left < personInfo.Location.Left) > 15 && personInfos.Count(o => o.Location.Left > personInfo.Location.Left) < 10)
-                {
-                    return Save(personInfo.Location.Left * 2);
-                }
-
-                // 头顶
-                if (personInfo.BodyParts.TopHead?.X > 0)
-                {
-                    return Save(personInfo.BodyParts.TopHead.X);
-                }
-
-                // 颈部
-                if (personInfo.BodyParts.Neck?.X > 0)
-                {
-                    return Save(personInfo.BodyParts.Neck.X);
-                }
-
-                // 鼻子
-                if (personInfo.BodyParts.Nose?.X > 0)
-                {
-                    return Save(personInfo.BodyParts.Nose.X);
-                }
-
-                // 嘴巴
-                if (personInfo.BodyParts.LeftMouthCorner?.X > 0 && personInfo.BodyParts?.RightMouthCorner?.X > 0)
-                {
-                    return Save((personInfo.BodyParts.LeftMouthCorner.X + personInfo.BodyParts.RightMouthCorner.X) / 2);
-                }
+                return rectangles.Length == 0 ? Rectangle.Empty : rectangles.MaxBy(rectangle => rectangle.Height * rectangle.Width);
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogError(ex, "Fail to recognize face");
+                return Rectangle.Empty;
             }
-
-            double Save(double d)
-            {
-                if (!string.IsNullOrWhiteSpace(url))
-                {
-                    var item = new ImageFaceCenterPoint() { Url = url, Point = d, Created = DateTime.Now };
-                    _applicationDatabase.ImageFaceCenterPoints.Upsert(item);
-                }
-
-                return d;
-            }
-
-            return 0;
         }
 
         public static HttpResponseMessage CreateHttpResponseInfo(byte[] bytes, string contentType = "image/jpeg")
@@ -331,6 +228,11 @@ namespace Jellyfin.Plugin.JavScraper.Services
             response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
 
             return response;
+        }
+
+        public void Dispose()
+        {
+            _cascadeClassifier.Dispose();
         }
     }
 }

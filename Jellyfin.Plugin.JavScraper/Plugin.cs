@@ -7,7 +7,6 @@ using Jellyfin.Plugin.JavScraper.Configuration;
 using Jellyfin.Plugin.JavScraper.Extensions;
 using Jellyfin.Plugin.JavScraper.Http;
 using Jellyfin.Plugin.JavScraper.Scrapers;
-using Jellyfin.Plugin.JavScraper.Services;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Drawing;
@@ -20,7 +19,6 @@ namespace Jellyfin.Plugin.JavScraper
     public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         private readonly ILogger _logger;
-        private readonly BodyAnalysisService _bodyAnalysisService;
         private readonly IWebProxy _webProxy;
         private readonly Dictionary<string, IScraper> _scrapers;
 
@@ -28,16 +26,14 @@ namespace Jellyfin.Plugin.JavScraper
             IApplicationPaths applicationPaths,
             IXmlSerializer xmlSerializer,
             ILoggerFactory loggerFactory,
-            BodyAnalysisService bodyAnalysisService,
             IWebProxy webProxy,
             IEnumerable<IScraper> scrapers) : base(applicationPaths, xmlSerializer)
         {
             Instance = this;
-            _bodyAnalysisService = bodyAnalysisService;
             _webProxy = webProxy;
             _scrapers = scrapers.ToDictionary(scraper => scraper.Name);
             _logger = loggerFactory.CreateLogger<Plugin>();
-            _logger.LogInformation("{Name} - Loaded, {Count} scrapers loaded.", Name, _scrapers.Count);
+            _logger.LogInformation("{Name} - Loaded, {Count} scrapers loaded", Name, _scrapers.Count);
             RefreshByConfig(Configuration);
             ConfigurationChanged = (sender, e) =>
             {
@@ -46,7 +42,7 @@ namespace Jellyfin.Plugin.JavScraper
                     return;
                 }
 
-                _logger.LogInformation("Configuration change, refresh services.");
+                _logger.LogInformation("Configuration change, refresh services");
                 RefreshByConfig(config);
             };
         }
@@ -101,8 +97,6 @@ namespace Jellyfin.Plugin.JavScraper
         private PluginConfiguration RefreshByConfig(PluginConfiguration configuration)
         {
             _logger.LogInformation("call {Method}, {Args}", nameof(RefreshByConfig), $"{nameof(configuration)}={configuration}");
-            // update bodyAnalysisService config
-            _bodyAnalysisService.RefreshToken(configuration.BaiduBodyAnalysisApiKey, configuration.BaiduBodyAnalysisSecretKey);
             // update scraper config
             var defaultScraperConfigList = _scrapers.Values.Select(scraper => new JavScraperConfigItem() { Name = scraper.Name, Enable = true, Url = scraper.BaseAddress.ToString() }).ToList();
             var scraperConfigList = configuration.ScraperConfigList.Where(scraperConfig => _scrapers.ContainsKey(scraperConfig.Name)).UnionBy(defaultScraperConfigList, config => config.Name).ToList();
